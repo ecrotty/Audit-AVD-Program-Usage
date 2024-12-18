@@ -7,6 +7,9 @@ A PowerShell script for monitoring and analyzing process creation events (Event 
 - Monitors process creation events (Event ID 4688) in Windows Security Log
 - Integrates with Microsoft Graph API to fetch user job titles
 - Standardizes job titles into user classes for better analysis
+- Implements intelligent caching of user information for improved performance
+- Filters out common system processes to focus on relevant user activity
+- Groups and summarizes program usage by user classes
 - Supports CSV export of collected data
 - Automatic installation of required PowerShell modules
 
@@ -17,8 +20,13 @@ A PowerShell script for monitoring and analyzing process creation events (Event 
    - Computer Configuration > Windows Settings > Security Settings > Advanced Audit Policy Configuration > Detailed Tracking
    - Enable "Audit Process Creation" for Success events
    - Run 'gpupdate /force' after changes
-3. Microsoft Graph PowerShell SDK modules (automatically installed by script)
-4. Appropriate Microsoft Entra ID permissions (User.Read.All)
+3. Microsoft Graph PowerShell SDK modules (automatically installed by script):
+   - Microsoft.Graph.Authentication
+   - Microsoft.Graph.Users
+   - Microsoft.Graph.Identity.DirectoryManagement
+4. Microsoft Entra ID permissions:
+   - User.Read.All
+   - Organization.Read.All
 
 ## Installation
 
@@ -48,16 +56,14 @@ cd Audit-AVD-Program-Usage
 
 ## Output
 
-The script provides the following information for each process creation event:
+The script provides a summarized view of process execution data:
 
-- Timestamp
-- Username
-- Process Name
-- Command Line
-- Job Title (from Microsoft Entra ID)
-- User Class (mapped from Job Title)
+- Program Name: Name of the executed process
+- User Classes: Classes of users who ran the program
+- Times Run: Total number of executions
+- Last Run: Most recent execution timestamp
 
-## Job Title Mapping
+### User Classification
 
 The script includes default mappings for common job titles to standardized classes:
 
@@ -67,6 +73,23 @@ The script includes default mappings for common job titles to standardized class
 - Administrator class: IT Admin, System Administrator, Network Admin
 
 You can customize these mappings by modifying the `$TitleToClassMapping` hashtable in the script.
+
+### System Process Filtering
+
+The script automatically filters out common system processes to focus on relevant user activity. The exclusion list includes processes like:
+- svchost.exe
+- RuntimeBroker.exe
+- explorer.exe
+- And other standard Windows system processes
+
+You can modify the `$ExcludedProcesses` array in the script to customize this filtering.
+
+## Performance Optimization
+
+The script implements several optimizations:
+- Caches user information to reduce Microsoft Graph API calls
+- Filters out common system processes early in the processing pipeline
+- Efficiently groups and summarizes data for meaningful analysis
 
 ## Contributing
 
@@ -87,3 +110,6 @@ Ed Crotty (ecrotty@edcrotty.com)
   - Microsoft Entra ID integration
   - Job title standardization
   - CSV export capability
+  - System process filtering
+  - User information caching
+  - Enhanced data summarization
