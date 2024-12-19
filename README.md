@@ -8,7 +8,10 @@ A PowerShell script for monitoring and analyzing process creation events (Event 
 - Integrates with Microsoft Graph API to fetch user job titles
 - Standardizes job titles into user classes for better analysis
 - Implements intelligent caching of user information for improved performance
-- Filters out common system processes to focus on relevant user activity
+- Smart process filtering:
+  - Excludes common system processes
+  - Tracks specific user applications
+  - Filters out system account activities
 - Groups and summarizes program usage by user classes
 - Supports CSV export of collected data
 - Automatic installation of required PowerShell modules
@@ -63,6 +66,47 @@ The script provides a summarized view of process execution data:
 - Times Run: Total number of executions
 - Last Run: Most recent execution timestamp
 
+### Tracked Applications
+
+The script monitors a comprehensive list of business and development applications across various categories:
+
+#### Microsoft Office Suite
+- Excel, Word, PowerPoint, Outlook, Teams, OneNote, Access, Publisher
+
+#### Development Tools and IDEs
+- Visual Studio, VS Code, Git tools, Node.js, Java Runtime, PowerShell
+- IIS Express, Salesforce CLI
+
+#### Database and Data Tools
+- SQL Server Management Studio, Azure Data Studio
+- PostgreSQL and Snowflake CLIs
+- DiskPie Pro
+
+#### BI and Analytics Tools
+- Power BI Desktop, Tableau, Tableau Prep Builder
+
+#### Statistical and Data Science
+- RStudio, Python, Jupyter Notebook/Lab
+- Anaconda Navigator
+
+#### Cloud and Enterprise Tools
+- Azure CLI, Storage Explorer, Enterprise Architect
+- Azure Functions Core Tools
+
+#### Remote Access and Network Tools
+- PuTTY, WinSCP, Cisco ASDM-IDM
+- TortoiseSVN
+
+#### Browsers
+- Chrome, Edge, Firefox, Internet Explorer, Brave
+
+### System Process Filtering
+
+The script automatically filters out:
+- Common Windows system processes (svchost.exe, RuntimeBroker.exe, etc.)
+- System utilities and background processes
+- System account activities (accounts ending with $ or "SYSTEM")
+
 ### User Classification
 
 The script includes default mappings for common job titles to standardized classes:
@@ -74,22 +118,13 @@ The script includes default mappings for common job titles to standardized class
 
 You can customize these mappings by modifying the `$TitleToClassMapping` hashtable in the script.
 
-### System Process Filtering
-
-The script automatically filters out common system processes to focus on relevant user activity. The exclusion list includes processes like:
-- svchost.exe
-- RuntimeBroker.exe
-- explorer.exe
-- And other standard Windows system processes
-
-You can modify the `$ExcludedProcesses` array in the script to customize this filtering.
-
 ## Performance Optimization
 
 The script implements several optimizations:
 - Caches user information to reduce Microsoft Graph API calls
-- Filters out common system processes early in the processing pipeline
+- Filters out system processes early in the processing pipeline
 - Efficiently groups and summarizes data for meaningful analysis
+- Smart filtering of relevant user applications
 
 ## Contributing
 
@@ -106,10 +141,10 @@ Ed Crotty (ecrotty@edcrotty.com)
 ## Version History
 
 - 1.0.0 (2024): Initial release
-  - Basic process monitoring functionality
+  - Process monitoring with smart application filtering
   - Microsoft Entra ID integration
   - Job title standardization
-  - CSV export capability
-  - System process filtering
+  - Comprehensive application tracking
+  - System process exclusion
   - User information caching
   - Enhanced data summarization
