@@ -5,19 +5,24 @@
 .DESCRIPTION
     This script monitors process creation events (Event ID 4688) in the Windows Security Log and correlates them
     with Microsoft Entra ID (formerly Azure AD) user information to provide insights into program usage patterns
-    across different user roles. It includes performance optimizations through user information caching and
-    intelligent filtering of system processes.
+    across different user roles. It includes sophisticated role classification, intelligent application detection,
+    and performance optimizations through bulk processing and caching.
 
     Key features:
-    - Process creation monitoring with system process filtering
-    - Microsoft Entra ID integration for user role classification
-    - User information caching for improved performance
-    - Automated data summarization and grouping
-    - CSV export capabilities
+    - Advanced process monitoring with intelligent application detection
+    - Sophisticated role classification with fuzzy matching
+    - Bulk user information processing for improved performance
+    - Comprehensive system process and path filtering
+    - Detailed program and user classification summaries
+    - Multiple CSV export formats
+    - Unknown program logging for review
+    - Progress indicators and detailed statistics
+    - Performance optimizations through caching and pre-compiled patterns
 
 .PARAMETER ExportPath
-    Optional path to export results as a CSV file. The export will contain summarized data including
-    program names, user classes, execution counts, and last run timestamps.
+    Optional path to export results as CSV files. The script will create two files:
+    - [ExportPath]-Programs.csv: Program usage summary with execution counts and user classes
+    - [ExportPath]-Users.csv: User classification summary with program usage details
 
 .PARAMETER Help
     Shows detailed help information about the script usage.
@@ -27,8 +32,10 @@
     Runs the script with default settings, outputting summarized results to the console.
 
 .EXAMPLE
-    .\Audit-AVD-Program-Usage.ps1 -ExportPath "C:\Logs\process_audit.csv"
-    Runs the script and exports summarized results to the specified CSV file.
+    .\Audit-AVD-Program-Usage.ps1 -ExportPath "C:\Logs\audit_report.csv"
+    Runs the script and exports both program and user summaries to CSV files:
+    - C:\Logs\audit_report-Programs.csv: Contains program usage statistics
+    - C:\Logs\audit_report-Users.csv: Contains user classification data
 
 .NOTES
     File Name      : Audit-AVD-Program-Usage.ps1
@@ -45,6 +52,21 @@
 .LINK
     https://github.com/ecrotty/Audit-AVD-Program-Usage
 #>
+
+# Event ID 4688 Monitoring Script
+# This script monitors process creation events (Event ID 4688) in the Windows Security Log
+# 
+# Prerequisites:
+# 1. Process Creation Auditing must be enabled via Group Policy:
+#    - Computer Configuration > Windows Settings > Security Settings > 
+#      Advanced Audit Policy Configuration > Detailed Tracking
+#    - Enable "Audit Process Creation" for Success events
+#    - Run 'gpupdate /force' after changes
+#
+# Event ID 4688 provides detailed tracking of process creation, helping identify:
+# - What processes users are running
+# - Command line arguments used
+# - Process creation time and context
 
 [CmdletBinding()]
 param(
@@ -115,163 +137,458 @@ $TitleToClassMapping = @{
     "Application Developer" = "Developer"
     ".NET Developer"        = "Developer"
     "Full Stack Developer"  = "Developer"
-    
+    "Salesforce Administrator Developer" = "Developer"
+     
+    # DevOps Roles
+    "Azure Devops Engineer" = "DevOps"
+
+    # Security Roles
+    "Junior Security Analyst" = "Security"
+
     # Data roles
     "Data Architect"        = "Data Professional"
     "Data Engineer"         = "Data Professional"
-    "Data Analyst"         = "Data Professional"
-    
+    "Data Analyst"          = "Data Professional"
+    "Data Design Architect" = "Data Professional"
+    "Health Information Analyst" = "Data Professional"    
+    "BI Developer"          = "Data Professional"
+    "Principal Data Architect" = "Data Professional"
+    "Lead Data Analyst"     = "Data Professional"
+    "Data Vault Analyst"    = "Data Professional"
+    "ETL Developer"         = "Data Professional"
+
+    # SCRUM roles
+    "Lead Scrum Master"     = "SCRUM Professional"
+
     # Engineering roles
     "Systems Engineer"      = "Engineer"
     "DevOps Engineer"       = "Engineer"
     "Cloud Engineer"        = "Engineer"
+
+    # Consultant roles
+    "Consultant"        = "Consultant"
+
+    # Contractor roles
+    "Contractor"            = "Contractor"
+
+    # QA roles
+    "QA"                    = "QA"
+    "QA Engineer"           = "QA"
     
     # Admin roles
-    "IT Admin"             = "Administrator"
-    "System Administrator" = "Administrator"
-    "Network Admin"        = "Administrator"
+    "IT Admin"             = "IT"
+    "System Administrator" = "IT"
+    "Network Admin"        = "IT"  
+    "Security Analyst"     = "IT"
+    "Sr. Cloud Engineer"   = "IT"
+
+    # Executive roles
+    "Sr. Dr., Data Informatics" = "Executives"
+    "Director, Analytics Insights" = "Executives"
+    "Sr. Director, IT Operations" = "Executives"
+    "Sr. Dr. Technology, ES" = "Executives"
 }
 
-# Define system processes to exclude
-$ExcludedProcesses = @(
-    # System processes
-    "svchost.exe",
-    "RuntimeBroker.exe",
-    "SearchHost.exe",
-    "SearchIndexer.exe",
-    "dwm.exe",
-    "csrss.exe",
-    "conhost.exe",
-    "WmiPrvSE.exe",
-    "spoolsv.exe",
-    "lsass.exe",
-    "services.exe",
-    "winlogon.exe",
-    "explorer.exe",
-    "ShellExperienceHost.exe",
-    "StartMenuExperienceHost.exe",
-    "sihost.exe",
-    "taskhostw.exe",
-    "ctfmon.exe",
-    "fontdrvhost.exe",
-    "dllhost.exe",
-    "backgroundTaskHost.exe",
+# Define role keywords for fuzzy matching
+$RoleKeywords = @{
+    "Developer" = @(
+        "Dev",
+        "Developer",
+        "Software",
+        "Programmer",
+        ".NET",
+        "Full Stack",
+        "Salesforce"
+    )
+    "DevOps" = @(
+        "DevOps",
+        "Platform Engineer",
+        "Release Engineer"
+    )
+    "Security" = @(
+        "Security",
+        "InfoSec",
+        "Cyber"
+    )
+    "Data Professional" = @(
+        "Data",
+        "Analytics",
+        "BI ",
+        "ETL",
+        "Business Intelligence",
+        "Informatics",
+        "Information"
+    )
+    "SCRUM Professional" = @(
+        "Scrum",
+        "Agile",
+        "Product Owner"
+    )
+    "Engineer" = @(
+        "Engineer",
+        "Engineering",
+        "Systems"
+    )
+    "Consultant" = @(
+        "Consultant",
+        "Consulting"
+    )
+    "Contractor" = @(
+        "Contractor",
+        "Contract"
+    )
+    "QA" = @(
+        "QA",
+        "Quality",
+        "Test",
+        "Testing"
+    )
+    "IT" = @(
+        "IT",
+        "System Admin",
+        "Network",
+        "Support",
+        "Infrastructure"
+    )
+    "Executives" = @(
+        "Director",
+        "Sr. Dr",
+        "Chief",
+        "VP",
+        "Vice President",
+        "Head of",
+        "Senior Director"
+    )
+}
+
+# Function to get the best matching role class
+function Get-BestRoleMatch {
+    param (
+        [string]$JobTitle
+    )
     
-    # System utilities and background processes
-    "vdsldr.exe",
-    "vds.exe",
-    "wsqmcons.exe",
-    "hvsievaluator.exe",
-    "cscript.exe",
-    "wscript.exe",
-    "msiexec.exe",
-    "consent.exe",
-    "SecurityHealthService.exe",
-    "smartscreen.exe",
-    "CompPkgSrv.exe",
-    "SgrmBroker.exe",
-    "audiodg.exe",
-    "dasHost.exe",
-    "SystemSettings.exe",
-    "UserOOBEBroker.exe",
-    "WindowsInternal.ComposableShell.Experiences.TextInput.InputApp.exe"
+    if ([string]::IsNullOrWhiteSpace($JobTitle)) {
+        return "Unknown"
+    }
+    
+    # First try exact match from TitleToClassMapping
+    if ($TitleToClassMapping.ContainsKey($JobTitle)) {
+        return $TitleToClassMapping[$JobTitle]
+    }
+    
+    # Normalize the job title
+    $normalizedTitle = $JobTitle.ToUpper()
+    $bestMatch = $null
+    $bestMatchCount = 0
+    
+    foreach ($roleClass in $RoleKeywords.Keys) {
+        $keywords = $RoleKeywords[$roleClass]
+        $matchCount = 0
+        
+        foreach ($keyword in $keywords) {
+            if ($normalizedTitle.Contains($keyword.ToUpper())) {
+                $matchCount++
+                
+                # Give extra weight to exact role matches
+                if ($roleClass -eq $TitleToClassMapping[$JobTitle]) {
+                    $matchCount += 2
+                }
+            }
+        }
+        
+        if ($matchCount -gt $bestMatchCount) {
+            $bestMatch = $roleClass
+            $bestMatchCount = $matchCount
+        }
+    }
+    
+    # If we found a match, return it
+    if ($bestMatch) {
+        return $bestMatch
+    }
+    
+    # If no match found, try to extract role from similar titles
+    foreach ($knownTitle in $TitleToClassMapping.Keys) {
+        if ($normalizedTitle.Contains($knownTitle.ToUpper())) {
+            return $TitleToClassMapping[$knownTitle]
+        }
+    }
+    
+    return "Other"
+}
+
+# Define system processes and locations to exclude
+$SystemPaths = @(
+    "\\Windows\\",
+    "\\Microsoft.NET\\",
+    "\\WinSxS\\",
+    "\\System32\\",
+    "\\SysWOW64\\",
+    "\\WindowsApps\\",
+    "\\ProgramData\\Microsoft\\",
+    "\\Windows Defender\\",
+    "\\Microsoft\\Edge\\",
+    "\\Microsoft\\EdgeUpdate\\",
+    "\\Microsoft OneDrive\\",
+    "\\AppData\\Local\\Microsoft\\",
+    "\\AppData\\Local\\Temp\\"
 )
 
-# Define patterns for user applications we want to track
-$UserAppPatterns = @(
-    # Microsoft Office Suite
-    "excel.exe",
-    "word.exe",
-    "powerpnt.exe",
-    "outlook.exe",
-    "teams.exe",
-    "onenote.exe",
-    "msaccess.exe",
-    "mspub.exe",
-    "Teams.exe",              # Teams desktop client
-    "Update.exe",             # Microsoft 365 Apps updater
+$SystemProcessPatterns = @(
+    # Windows core processes
+    '^(svchost|RuntimeBroker|SearchHost|SearchIndexer|dwm|csrss|conhost|WmiPrvSE|spoolsv|lsass|services|winlogon|explorer|ShellExperienceHost|StartMenuExperienceHost|sihost|taskhostw|ctfmon|fontdrvhost|dllhost|backgroundTaskHost)\.exe$',
     
-    # Browsers
-    "chrome.exe",             # Google Chrome
-    "msedge.exe",            # Microsoft Edge
-    "firefox.exe",
-    "iexplore.exe",
-    "brave.exe",
+    # System utilities
+    '^(vdsldr|vds|wsqmcons|hvsievaluator|cscript|wscript|msiexec|consent|smartscreen|CompPkgSrv|SgrmBroker|audiodg|dasHost|SystemSettings|UserOOBEBroker)\.exe$',
     
-    # Development Tools and IDEs
-    "devenv.exe",            # Visual Studio
-    "Code.exe",              # VS Code
-    "ServiceHub.Host.Node.x86.exe", # VS Code Service
-    "ServiceHub.IdentityHost.exe",  # VS Code Identity Service
-    "git.exe",               # Git
-    "gitextensions.exe",     # Git Extensions
-    "GitHubDesktop.exe",     # GitHub Desktop
-    "node.exe",              # Node.js
-    "npm.exe",               # Node Package Manager
-    "iisexpress.exe",        # IIS Express
-    "java.exe",              # Java Runtime
-    "javaw.exe",             # Java Window Runtime
-    "pwsh.exe",              # PowerShell 7
-    "sfdx.exe",              # Salesforce CLI
+    # Windows services and updates
+    '^(TiWorker|TrustedInstaller|wuauclt|sppsvc|MsMpEng|NisSrv|SecurityHealthService|uhssvc)\.exe$',
     
-    # Database and Data Tools
-    "Ssms.exe",              # SQL Server Management Studio
-    "azuredatastudio.exe",   # Azure Data Studio
-    "sqlcmd.exe",            # SQL Command Line
-    "psql.exe",              # PostgreSQL CLI
-    "snowsql.exe",           # Snowflake CLI
-    "DiskPie.exe",           # PC Magazine DiskPie Pro
-    
-    # BI and Analytics Tools
-    "PBIDesktop.exe",        # Power BI Desktop
-    "RSHostingService.exe",  # Power BI Report Builder
-    "Tableau.exe",           # Tableau
-    "tableau.exe",           # Tableau (alternate)
-    "TableauPrep.exe",       # Tableau Prep Builder
-    
-    # Statistical and Data Science
-    "Rstudio.exe",           # RStudio
-    "R.exe",                 # R Runtime
-    "python.exe",            # Python
-    "pythonw.exe",           # Python Window Runtime
-    "jupyter-notebook.exe",  # Jupyter Notebook
-    "jupyter-lab.exe",       # Jupyter Lab
-    "anaconda-navigator.exe", # Anaconda Navigator
-    
-    # Azure and Cloud Tools
-    "func.exe",              # Azure Functions Core Tools
-    "az.exe",                # Azure CLI
-    "AzureStorageEmulator.exe", # Azure Storage Emulator
-    "StorageExplorer.exe",   # Azure Storage Explorer
-    
-    # Enterprise Tools
-    "EA.exe",                # Enterprise Architect
-    "CompareIt.exe",         # Compare It!
-    "CozyrocSsisPlus.exe",   # COZYROC SSIS+
-    
-    # Remote Access and Network Tools
-    "putty.exe",             # PuTTY
-    "winscp.exe",            # WinSCP
-    "asdm.exe",              # Cisco ASDM-IDM
-    "TortoiseProc.exe",      # TortoiseSVN
-    
-    # File Management and Utilities
-    "7zFM.exe",              # 7-Zip File Manager
-    "7z.exe",                # 7-Zip Command Line
-    "Acrobat.exe",           # Adobe Acrobat
-    "AcroRd32.exe",          # Adobe Reader
-    "notepad++.exe",         # Notepad++
-    "OneDrive.exe",          # Microsoft OneDrive
-    
-    # Monitoring and Management
-    "MonitoringHost.exe",    # Microsoft Monitoring Agent
-    "TaegisAgent.exe",       # Taegis Agent
-    "FSLogixApps.exe",       # Microsoft FSLogix Apps
-    "IntuneManagementExtension.exe" # Microsoft Intune Management
+    # Temporary and generated executables
+    '^[0-9a-f]{32}\.exe$',
+    '\.tmp$'
 )
 
-# Create a cache for user information
+# Combine patterns into a single regex for performance
+$SystemProcessRegex = [regex]::new(($SystemProcessPatterns -join '|'), [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+
+# Function to check if a process is likely a user application
+function Test-UserApplication {
+    param (
+        [string]$ProcessPath,
+        [string]$ProcessName,
+        [string]$CommandLine
+    )
+    
+    Write-Verbose "Checking process: $ProcessName ($ProcessPath)"
+    
+    # Skip system processes
+    if ($ProcessName -match $SystemProcessRegex) {
+        Write-Verbose "  Skipped: Matches system process pattern"
+        return $false
+    }
+    
+    # Skip processes from system paths
+    foreach ($path in $SystemPaths) {
+        if ($ProcessPath -like "*$path*") {
+            Write-Verbose "  Skipped: In system path $path"
+            return $false
+        }
+    }
+    
+    # Known user application paths
+    if ($ProcessPath -match "\\Program Files( \(x86\))?\\") {
+        Write-Verbose "  Accepted: In Program Files"
+        return $true
+    }
+    
+    # Skip temporary or randomly named executables
+    if ($ProcessName -match '^\d+$' -or $ProcessName -match '^[0-9a-f]{8,}$') {
+        Write-Verbose "  Skipped: Temporary or random name"
+        return $false
+    }
+    
+    # Additional heuristics for user applications
+    $userAppIndicators = @(
+        # Common program paths
+        '\\Program Files',
+        '\\Users\\[^\\]+\\AppData\\Local\\Programs\\',
+        # Development tools
+        'Visual Studio',
+        '\\Python',
+        '\\nodejs',
+        # Common application vendors
+        'Microsoft Office',
+        'Adobe',
+        'Google',
+        'Mozilla',
+        'Tableau',
+        'Power BI'
+    )
+    
+    foreach ($indicator in $userAppIndicators) {
+        if ($ProcessPath -match $indicator) {
+            Write-Verbose "  Accepted: Matches user app indicator: $indicator"
+            return $true
+        }
+    }
+    
+    # Common user applications (fallback list)
+    $commonUserApps = @(
+        '^(excel|word|powerpnt|outlook|teams|chrome|msedge|firefox|code|notepad\+\+|putty|winscp|powershell_ise)\.exe$'
+    )
+    
+    if ($ProcessName -match ($commonUserApps -join '|')) {
+        Write-Verbose "  Accepted: Common user application"
+        return $true
+    }
+    
+    # If command line contains specific parameters that indicate user interaction
+    $userInteractionParams = @(
+        '--user-data-dir=',
+        '--profile=',
+        '-foreground',
+        '-interactive',
+        '/user:'
+    )
+    
+    foreach ($param in $userInteractionParams) {
+        if ($CommandLine -like "*$param*") {
+            Write-Verbose "  Accepted: User interaction parameter found: $param"
+            return $true
+        }
+    }
+    
+    Write-Verbose "  Skipped: No matching criteria"
+    return $false
+}
+
+# Create cache for user information
 $UserCache = @{}
+$ProcessData = @()
+$UserClassificationData = @{}
+
+# Pre-compile regex patterns for performance
+$SystemAccountPattern = [regex]'(?:\$$|^SYSTEM$|admin|^NT)'
+
+# Get all events first and filter in memory
+Write-Host "Retrieving events..." -ForegroundColor Cyan
+$AllEvents = Get-WinEvent -LogName "Security" -FilterXPath "*[System[EventID=4688]]" -ErrorAction Stop
+
+# Get unique usernames from events for bulk processing
+Write-Host "Processing unique users..." -ForegroundColor Cyan
+$UniqueUsers = $AllEvents | ForEach-Object {
+    $username = ([xml]$_.ToXml()).Event.EventData.Data | 
+    Where-Object {$_.Name -eq "SubjectUserName"} | 
+    Select-Object -ExpandProperty '#text'
+    if (-not ($username -match $SystemAccountPattern)) {
+        # Extract username without domain and clean it
+        $cleanUsername = $username -replace '^.*\\', ''
+        if (-not [string]::IsNullOrEmpty($cleanUsername)) {
+            Write-Verbose "Found user: $cleanUsername"
+            $cleanUsername
+        }
+    }
+} | Select-Object -Unique
+
+Write-Host "Found $($UniqueUsers.Count) unique users" -ForegroundColor Cyan
+
+# Bulk process user information
+Write-Host "Retrieving user information from Entra ID..." -ForegroundColor Cyan
+foreach ($username in $UniqueUsers) {
+    try {
+        Write-Verbose "Looking up user: $username"
+        $filter = "startsWith(userPrincipalName, '$username')"
+        $mgUser = Get-MgUser -Filter $filter -Property "jobTitle"
+        if ($mgUser) {
+            Write-Verbose "Found user $username with title: $($mgUser.JobTitle)"
+            $UserCache[$username] = @{
+                JobTitle = $mgUser.JobTitle
+                UserClass = Get-BestRoleMatch -JobTitle $mgUser.JobTitle
+            }
+        } else {
+            Write-Verbose "No exact match found for $username, trying UPN search"
+            # Try searching with domain
+            $mgUser = Get-MgUser -Filter "userPrincipalName eq '$username@$OrgDomain'" -Property "jobTitle"
+            if ($mgUser) {
+                Write-Verbose "Found user with domain: $username@$OrgDomain"
+                $UserCache[$username] = @{
+                    JobTitle = $mgUser.JobTitle
+                    UserClass = Get-BestRoleMatch -JobTitle $mgUser.JobTitle
+                }
+            }
+        }
+    } catch {
+        Write-Verbose "Error looking up user $username`: $_"
+    }
+}
+
+Write-Host "Found $($UserCache.Count) users in Entra ID" -ForegroundColor Cyan
+
+Write-Host "Processing events..." -ForegroundColor Cyan
+$UnknownPrograms = [System.Collections.Generic.HashSet[string]]::new()
+$ProcessCount = 0
+$UserAppCount = 0
+
+foreach ($Event in $AllEvents) {
+    $ProcessCount++
+    $EventXml = [xml]$Event.ToXml()
+    
+    # Extract process information
+    $ProcessPath = $EventXml.Event.EventData.Data[5].'#text'
+    $ProcessName = Split-Path -Leaf $ProcessPath
+    $CommandLine = ($EventXml.Event.EventData.Data | Where-Object {$_.Name -eq "CommandLine"}).'#text'
+    
+    # Check if it's a user application
+    if (-not (Test-UserApplication -ProcessPath $ProcessPath -ProcessName $ProcessName -CommandLine $CommandLine)) {
+        if ($ProcessName.EndsWith('.exe')) {
+            [void]$UnknownPrograms.Add("$ProcessName ($ProcessPath)")
+        }
+        continue
+    }
+    
+    $UserAppCount++
+    
+    # Get username and clean it
+    $username = ($EventXml.Event.EventData.Data | Where-Object {$_.Name -eq "SubjectUserName"}).'#text'
+    $username = $username -replace '^.*\\', ''
+    
+    # Skip system accounts
+    if ($username -match $SystemAccountPattern) {
+        Write-Verbose "Skipped system account: $username"
+        continue
+    }
+    
+    # Get cached user info
+    $userInfo = $UserCache[$username]
+    if (-not $userInfo) {
+        Write-Verbose "No cached info for user: $username"
+        continue
+    }
+    
+    Write-Verbose "Processing $ProcessName for user $username ($($userInfo.UserClass))"
+    
+    # Skip if we couldn't get valid user info
+    if ($userInfo.UserClass -eq "Unknown") {
+        Write-Verbose "Skipping unknown user class: $username"
+        continue
+    }
+    
+    # Update user classification data using cached information
+    if (-not $UserClassificationData.ContainsKey($username)) {
+        $UserClassificationData[$username] = @{
+            Username = $username
+            JobTitle = $userInfo.JobTitle
+            UserClass = $userInfo.UserClass
+            LastSeen = $Event.TimeCreated
+            ProcessCount = 0
+            Programs = [System.Collections.Generic.HashSet[string]]::new()
+        }
+    }
+    
+    $userData = $UserClassificationData[$username]
+    $userData.ProcessCount++
+    [void]$userData.Programs.Add($ProcessName)
+    if ($Event.TimeCreated -gt $userData.LastSeen) {
+        $userData.LastSeen = $Event.TimeCreated
+    }
+    
+    # Add to process data
+    $ProcessInfo = [PSCustomObject]@{
+        Timestamp     = $Event.TimeCreated
+        Username      = $username
+        ProcessName   = $ProcessName
+        CommandLine   = $CommandLine
+        JobTitle      = $userInfo.JobTitle
+        UserClass     = $userInfo.UserClass
+    }
+
+    $ProcessData += $ProcessInfo
+}
+
+Write-Host "`nProcessing Summary:" -ForegroundColor Cyan
+Write-Host "Total processes examined: $ProcessCount"
+Write-Host "User applications found: $UserAppCount"
 
 # Get organization domain
 try {
@@ -288,104 +605,34 @@ try {
     exit 1
 }
 
-# Function to get user class information
-function Get-UserClassInfo {
-    param (
-        [string]$Username
-    )
-    
-    # Remove domain prefix if present
-    $username = $Username -replace '^.*\\', ''
-    
-    # Check if user is already in cache
-    if ($UserCache.ContainsKey($username)) {
-        return $UserCache[$username]
-    }
-    
-    # If not in cache, lookup in Entra ID
-    try {
-        $mgUser = Get-MgUser -Filter "userPrincipalName eq '$username@$OrgDomain'" -Property "jobTitle"
-        $userInfo = @{
-            JobTitle = $mgUser.JobTitle
-            UserClass = "Unknown"
-        }
-        
-        # Map job title to user class
-        if ($userInfo.JobTitle -and $TitleToClassMapping.ContainsKey($userInfo.JobTitle)) {
-            $userInfo.UserClass = $TitleToClassMapping[$userInfo.JobTitle]
-        }
-        
-        # Add to cache
-        $UserCache[$username] = $userInfo
-        return $userInfo
-    } catch {
-        Write-Verbose "Could not find Entra ID info for user: $Username"
-        return @{
-            JobTitle = $null
-            UserClass = "Unknown"
-        }
-    }
-}
-
-# Extract Event Log for Process Creation (Event ID 4688)
-try {
-    $Events = Get-WinEvent -LogName "Security" -FilterXPath "*[System[EventID=4688]]" -ErrorAction Stop
-} catch {
-    Write-Warning "No process creation events found or access denied. Ensure audit policy is enabled."
-    Write-Warning $_.Exception.Message
-    exit 1
-}
-
-# Process and extract details
-$ProcessData = @()
-
-foreach ($Event in $Events) {
-    $EventXml = [xml]$Event.ToXml()
-    
-    # Extract process name from NewProcessName
-    $ProcessName = Split-Path -Leaf $EventXml.Event.EventData.Data[5].'#text'
-    
-    # Skip if process is in the excluded list
-    if ($ExcludedProcesses -contains $ProcessName) {
-        continue
-    }
-    
-    # Skip if username ends with $ (system account) or is "SYSTEM"
-    $username = ($EventXml.Event.EventData.Data | Where-Object {$_.Name -eq "SubjectUserName"}).'#text'
-    if ($username -match '\$$' -or $username -eq "SYSTEM") {
-        continue
-    }
-    
-    # Only include if it matches our user application patterns
-    if ($UserAppPatterns -notcontains $ProcessName) {
-        continue
-    }
-    
-    $userInfo = Get-UserClassInfo -Username $username
-    
-    # Extract event details
-    $ProcessInfo = [PSCustomObject]@{
-        Timestamp     = $Event.TimeCreated
-        Username      = $username
-        ProcessName   = $ProcessName
-        CommandLine   = ($EventXml.Event.EventData.Data | Where-Object {$_.Name -eq "CommandLine"}).'#text'
-        JobTitle      = $userInfo.JobTitle
-        UserClass     = $userInfo.UserClass
-    }
-
-    $ProcessData += $ProcessInfo
-}
-
 # Output results
 if ($ProcessData.Count -eq 0) {
     Write-Warning "No process data found"
     exit
 }
 
-# Group and summarize the data
+# Create user classification summary
+$UserSummary = $UserClassificationData.Values | ForEach-Object {
+    [PSCustomObject]@{
+        'Username'      = $_.Username
+        'Job Title'     = $_.JobTitle
+        'User Class'    = $_.UserClass
+        'Programs Used' = ($_.Programs | Sort-Object) -join ', '
+        'Process Count' = $_.ProcessCount
+        'Last Active'   = $_.LastSeen
+    }
+} | Sort-Object Username
+
+# Group and summarize the process data
 $SummaryData = $ProcessData | Group-Object ProcessName | ForEach-Object {
-    $UserClasses = ($_.Group | Select-Object -ExpandProperty UserClass -Unique) -join ', '
-    if ($UserClasses -eq 'Unknown') { $UserClasses = 'System Account' }
+    # Get unique user classes, excluding Unknown and Other
+    $UserClasses = ($_.Group | Select-Object -ExpandProperty UserClass -Unique | 
+                   Where-Object { $_ -notin @("Unknown", "Other") }) -join ', '
+    
+    # If no valid classes found, skip this process
+    if ([string]::IsNullOrWhiteSpace($UserClasses)) {
+        return
+    }
     
     [PSCustomObject]@{
         'Program Name'    = $_.Name
@@ -393,16 +640,42 @@ $SummaryData = $ProcessData | Group-Object ProcessName | ForEach-Object {
         'Times Run'       = $_.Count
         'Last Run'        = ($_.Group | Sort-Object Timestamp -Descending | Select-Object -First 1).Timestamp
     }
-} | Sort-Object 'Times Run' -Descending
+} | Where-Object { $_ -ne $null } | Sort-Object 'Times Run' -Descending
 
 # Display results to console
+Write-Host "`nProgram Usage Summary:" -ForegroundColor Cyan
 $SummaryData | Format-Table -AutoSize
+
+Write-Host "`nUser Classification Summary:" -ForegroundColor Cyan
+$UserSummary | Format-Table -AutoSize
+
+# After processing, show unknown programs for review
+if ($UnknownPrograms.Count -gt 0) {
+    Write-Host "`nPotential user applications not categorized:" -ForegroundColor Yellow
+    $UnknownPrograms | Sort-Object | ForEach-Object {
+        Write-Host "  $_"
+    }
+}
 
 # Export to CSV if path provided
 if ($ExportPath) {
     try {
-        $SummaryData | Export-Csv -Path $ExportPath -NoTypeInformation
-        Write-Host "Results exported to: $ExportPath"
+        # Get the base path without extension
+        $basePath = [System.IO.Path]::GetDirectoryName($ExportPath)
+        $baseFileName = [System.IO.Path]::GetFileNameWithoutExtension($ExportPath)
+        $extension = [System.IO.Path]::GetExtension($ExportPath)
+        
+        # Create paths for both files
+        $programPath = Join-Path $basePath "$baseFileName-Programs$extension"
+        $userPath = Join-Path $basePath "$baseFileName-Users$extension"
+        
+        # Export both summaries
+        $SummaryData | Export-Csv -Path $programPath -NoTypeInformation
+        $UserSummary | Export-Csv -Path $userPath -NoTypeInformation
+        
+        Write-Host "`nResults exported to:"
+        Write-Host "Program summary: $programPath"
+        Write-Host "User summary: $userPath"
     } catch {
         Write-Error "Failed to export CSV: $_"
     }
