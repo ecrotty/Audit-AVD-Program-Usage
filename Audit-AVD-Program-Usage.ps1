@@ -1,58 +1,3 @@
-<#
-.SYNOPSIS
-    Monitors and analyzes process creation events in Azure Virtual Desktop environments with Microsoft Entra ID integration.
-
-.DESCRIPTION
-    This script monitors process creation events (Event ID 4688) in the Windows Security Log and correlates them
-    with Microsoft Entra ID (formerly Azure AD) user information to provide insights into program usage patterns
-    across different user roles. It includes sophisticated role classification, intelligent application detection,
-    and performance optimizations through bulk processing and caching.
-
-    Key features:
-    - Advanced process monitoring with intelligent application detection
-    - Sophisticated role classification with fuzzy matching
-    - Bulk user information processing for improved performance
-    - Comprehensive system process and path filtering
-    - Detailed program and user classification summaries
-    - Multiple CSV export formats
-    - Unknown program logging for review
-    - Progress indicators and detailed statistics
-    - Performance optimizations through caching and pre-compiled patterns
-
-.PARAMETER ExportPath
-    Optional path to export results as CSV files. The script will create two files:
-    - [ExportPath]-Programs.csv: Program usage summary with execution counts and user classes
-    - [ExportPath]-Users.csv: User classification summary with program usage details
-
-.PARAMETER Help
-    Shows detailed help information about the script usage.
-
-.EXAMPLE
-    .\Audit-AVD-Program-Usage.ps1
-    Runs the script with default settings, outputting summarized results to the console.
-
-.EXAMPLE
-    .\Audit-AVD-Program-Usage.ps1 -ExportPath "C:\Logs\audit_report.csv"
-    Runs the script and exports both program and user summaries to CSV files:
-    - C:\Logs\audit_report-Programs.csv: Contains program usage statistics
-    - C:\Logs\audit_report-Users.csv: Contains user classification data
-
-.NOTES
-    File Name      : Audit-AVD-Program-Usage.ps1
-    Author         : Ed Crotty (ecrotty@edcrotty.com)
-    Prerequisite   : - Process Creation Auditing enabled via Group Policy
-                    - Microsoft.Graph.Authentication module
-                    - Microsoft.Graph.Users module
-                    - Microsoft.Graph.Identity.DirectoryManagement module
-                    - Microsoft Entra ID permissions: User.Read.All, Organization.Read.All
-    License        : BSD 3-Clause License
-    Version        : 1.0.0
-    Repository     : https://github.com/ecrotty/Audit-AVD-Program-Usage
-
-.LINK
-    https://github.com/ecrotty/Audit-AVD-Program-Usage
-#>
-
 # Event ID 4688 Monitoring Script
 # This script monitors process creation events (Event ID 4688) in the Windows Security Log
 # 
@@ -166,7 +111,7 @@ $TitleToClassMapping = @{
     "Cloud Engineer"        = "Engineer"
 
     # Consultant roles
-    "Consultant"        = "Consultant"
+    "Consultant"	    = "Consultant"
 
     # Contractor roles
     "Contractor"            = "Contractor"
@@ -397,13 +342,14 @@ function Test-UserApplication {
         'Visual Studio',
         '\\Python',
         '\\nodejs',
+        '\\DBeaver\\',
         # Common application vendors
         'Microsoft Office',
-        'Adobe',
-        'Google',
-        'Mozilla',
-        'Tableau',
-        'Power BI'
+        '\\Microsoft\\Teams\\',
+        '\\Figma\\',
+        '\\AppData\\Local\\Programs\\',
+        '\\AppData\\Local\\.*\\Teams\\',
+        '\\AppData\\Local\\FigmaAgent\\'
     )
     
     foreach ($indicator in $userAppIndicators) {
