@@ -1,65 +1,15 @@
-<#
-BSD 3-Clause License
-
-Copyright (c) 2024, Edward Crotty
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
-1. Redistributions of source code must retain the above copyright notice, this
-   list of conditions and the following disclaimer.
-
-2. Redistributions in binary form must reproduce the above copyright notice,
-   this list of conditions and the following disclaimer in the documentation
-   and/or other materials provided with the distribution.
-
-3. Neither the name of the copyright holder nor the names of its
-   contributors may be used to endorse or promote products derived from
-   this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#>
-
-<#
-.SYNOPSIS
-    Monitors and analyzes process creation events in Azure Virtual Desktop environments.
-
-.DESCRIPTION
-    This script analyzes Windows Security Event ID 4688 (Process Creation) events to track
-    program usage in Azure Virtual Desktop (AVD) environments. It identifies user applications
-    versus system processes and generates usage summaries by user.
-
-    Key Features:
-    - Tracks user program usage through Event ID 4688 analysis
-    - Filters out system processes and utilities
-    - Identifies common user applications (Office, dev tools, etc.)
-    - Generates user-based program usage summaries
-    - Optional CSV export of results
-
-.NOTES
-    Author: Edward Crotty
-    Created: December 2023
-    Version: 2.0
-    
-    Prerequisites:
-    - Process Creation Auditing enabled (Event ID 4688)
-    - Microsoft.Graph PowerShell module
-    - Administrator rights to read Security event log
-#>
-
-# Event ID 4688 Monitoring Script
-# This script monitors process creation events (Event ID 4688) in the Windows Security Log
-# 
+# Audit-AVD-Program-Usage.ps1
+# Author: Ed Crotty
+# Created: 2024-12-27
+#
+# Description:
+# This PowerShell script analyzes program usage in Azure Virtual Desktop (AVD) environments by monitoring
+# process creation events (Event ID 4688) in the Windows Security Log. It helps administrators track
+# and audit which applications users are running in their AVD sessions.
+#
+# Usage:
+# .\Audit-AVD-Program-Usage.ps1 [-ExportPath <path>] [-History <timespan>]
+#
 # Prerequisites:
 # 1. Process Creation Auditing must be enabled via Group Policy:
 #    - Computer Configuration > Windows Settings > Security Settings > 
@@ -313,6 +263,8 @@ function Get-FriendlyProgramName {
 $UserCache = @{}
 $ProcessData = @()
 $UserClassificationData = @{}
+$UnknownPrograms = @{}
+$ProcessCount = 0
 
 # Pre-compile regex patterns for performance
 $SystemAccountPattern = [regex]'(?:\$$|^SYSTEM$|admin|^NT)'
@@ -373,32 +325,32 @@ foreach ($Event in $AllEvents) {
     $EventXml = [xml]$Event.ToXml()
     
     # Extract process information
-    $ProcessPath = $EventXml.Event.EventData.Data[5].'#text'
-    $ProcessName = Split-Path -Leaf $ProcessPath
-    $CommandLine = ($EventXml.Event.EventData.Data | Where-Object {$_.Name -eq "CommandLine"}).'#text'
+    $ProcessPath = ($EventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'NewProcessName' }).'#text'
+    $ProcessName = Split-Path $ProcessPath -Leaf
+    $CommandLine = ($EventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'CommandLine' }).'#text'
+    $Username = ($EventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'SubjectUserName' }).'#text'
     
     # Check if it's a user application
     if (-not (Test-UserApplication -ProcessPath $ProcessPath -ProcessName $ProcessName -CommandLine $CommandLine)) {
         if ($ProcessName.EndsWith('.exe')) {
-            [void]$UnknownPrograms.Add("$ProcessName ($ProcessPath)")
+            if (-not $UnknownPrograms.ContainsKey($ProcessName)) {
+                $UnknownPrograms[$ProcessName] = $ProcessPath
+            }
         }
         continue
     }
     
-    $UserAppCount++
-    
     # Get username and clean it
-    $username = ($EventXml.Event.EventData.Data | Where-Object {$_.Name -eq "SubjectUserName"}).'#text'
-    $username = $username -replace '^.*\\', ''
+    $Username = $Username -replace '^.*\\', ''
     
     # Skip system accounts
-    if ($username -match $SystemAccountPattern) {
-        Write-Verbose "Skipped system account: $username"
+    if ($Username -match $SystemAccountPattern) {
+        Write-Verbose "Skipped system account: $Username"
         continue
     }
     
     # Get user info from cache, but don't skip if not found
-    $userInfo = $UserCache[$username]
+    $userInfo = $UserCache[$Username]
     if (-not $userInfo) {
         $userInfo = @{
             JobTitle = "Unknown"
@@ -406,12 +358,12 @@ foreach ($Event in $AllEvents) {
         }
     }
     
-    Write-Verbose "Processing $ProcessName for user $username ($($userInfo.UserClass))"
+    Write-Verbose "Processing $ProcessName for user $Username ($($userInfo.UserClass))"
     
     # Update user classification data
-    if (-not $UserClassificationData.ContainsKey($username)) {
-        $UserClassificationData[$username] = @{
-            Username = $username
+    if (-not $UserClassificationData.ContainsKey($Username)) {
+        $UserClassificationData[$Username] = @{
+            Username = $Username
             JobTitle = $userInfo.JobTitle
             UserClass = $userInfo.UserClass
             LastSeen = $Event.TimeCreated
@@ -420,7 +372,7 @@ foreach ($Event in $AllEvents) {
         }
     }
     
-    $userData = $UserClassificationData[$username]
+    $userData = $UserClassificationData[$Username]
     $userData.ProcessCount++
     [void]$userData.Programs.Add($ProcessName)
     if ($Event.TimeCreated -gt $userData.LastSeen) {
@@ -430,7 +382,7 @@ foreach ($Event in $AllEvents) {
     # Add to process data
     $ProcessInfo = [PSCustomObject]@{
         Timestamp     = $Event.TimeCreated
-        Username      = $username
+        Username      = $Username
         ProcessName   = $ProcessName
         CommandLine   = $CommandLine
         JobTitle      = $userInfo.JobTitle
@@ -443,7 +395,7 @@ foreach ($Event in $AllEvents) {
 
 Write-Host "`nProcessing Summary:" -ForegroundColor Cyan
 Write-Host "Total processes examined: $ProcessCount"
-Write-Host "User applications found: $UserAppCount"
+Write-Host "User applications found: $($ProcessData.Count)"
 
 # Get unique usernames from events for bulk processing
 Write-Host "Processing unique users..." -ForegroundColor Cyan
@@ -541,6 +493,56 @@ foreach ($username in $UniqueUsers) {
 
 Write-Host "Found $foundUsers users in Entra ID" -ForegroundColor Cyan
 
+# Group and summarize the process data
+$SummaryData = $ProcessData | Group-Object ProcessName | ForEach-Object {
+    # Get unique departments for this process
+    $departments = $_.Group | Select-Object -ExpandProperty Username -Unique | ForEach-Object {
+        $UserCache[$_].Department
+    } | Sort-Object -Unique | Where-Object { $_ -ne "Unknown" -and $_ -ne "System" }
+
+    [PSCustomObject]@{
+        'Program Name'    = $_.Name
+        'Friendly Name'   = ($_.Group | Select-Object -ExpandProperty FriendlyName -First 1)
+        'Department'      = ($departments -join ', ')
+        'Times Run'       = $_.Count
+        'Last Run'        = ($_.Group | Sort-Object Timestamp -Descending | Select-Object -First 1).Timestamp.ToString('MM/dd/yyyy h:mm:ss tt')
+    }
+} | Sort-Object 'Times Run' -Descending
+
+# Display results to console
+Write-Host "`nProgram Usage Summary:" -ForegroundColor Cyan
+Write-Host "User applications found: $($ProcessData.Count)" -ForegroundColor Yellow
+$SummaryData | Format-Table -Property @(
+    'Program Name',
+    'Friendly Name',
+    'Department',
+    @{Name='Times Run'; Expression={$_.'Times Run'}},
+    @{Name='Last Run'; Expression={$_.'Last Run'}}
+) -AutoSize
+
+# Create potential user applications section
+$SummaryPrograms = $SummaryData | Select-Object -ExpandProperty 'Program Name'
+$PotentialUserApps = $ProcessData | Where-Object {
+    # Filter for applications that might be user apps but aren't in known categories or summary
+    $app = $_
+    -not ($SystemProcessRegex.IsMatch($app.ProcessName)) -and
+    -not ($SystemPaths | Where-Object { $app.ProcessPath -like "*$_*" }) -and
+    -not ($UserApps -contains $app.ProcessName.ToLower()) -and
+    -not ($SummaryPrograms -contains $app.ProcessName)
+} | Group-Object ProcessName | ForEach-Object {
+    [PSCustomObject]@{
+        'Program Name' = $_.Name
+        'Full Path' = if ($_.Group[0].ProcessPath) { $_.Group[0].ProcessPath } else { "Unknown" }
+        'Times Seen' = $_.Count
+        'Users' = ($_.Group | Select-Object -ExpandProperty Username -Unique | Sort-Object) -join ', '
+        'Last Run' = ($_.Group | Sort-Object Timestamp -Descending | Select-Object -First 1).Timestamp.ToString('MM/dd/yyyy h:mm:ss tt')
+    }
+} | Sort-Object 'Times Seen' -Descending
+
+# Display potential user applications
+Write-Host "`nPotential User Applications:" -ForegroundColor Yellow
+$PotentialUserApps | Format-Table -AutoSize
+
 # Create user classification summary
 $UserSummary = $UniqueUsers | ForEach-Object {
     $username = $_
@@ -551,12 +553,8 @@ $UserSummary = $UniqueUsers | ForEach-Object {
     [PSCustomObject]@{
         'Username'      = $username
         'Job Title'     = $userInfo.JobTitle
-        'User Class'    = $userInfo.UserClass
         'Department'    = $userInfo.Department
         'Programs Used' = ($programs -join ', ')
-        'Process Count' = ($ProcessData | Where-Object { $_.Username -eq $username }).Count
-        'Last Active'   = ($ProcessData | Where-Object { $_.Username -eq $username } | 
-                          Sort-Object Timestamp -Descending | Select-Object -First 1).Timestamp
     }
 } | Sort-Object Username
 
@@ -564,46 +562,26 @@ $UserSummary = $UniqueUsers | ForEach-Object {
 Write-Host "`nUser Classification Summary:" -ForegroundColor Cyan
 $UserSummary | Format-Table -AutoSize
 
-# Group and summarize the process data
-$SummaryData = $ProcessData | Group-Object ProcessName | ForEach-Object {
-    # Get unique departments for this process
-    $departments = $_.Group | Select-Object -ExpandProperty Username -Unique | ForEach-Object {
-        $UserCache[$_].Department
-    } | Sort-Object -Unique | Where-Object { $_ -ne "Unknown" }
-
-    [PSCustomObject]@{
-        'Program Name'    = $_.Name
-        'Friendly Name'   = ($_.Group | Select-Object -ExpandProperty FriendlyName -First 1)
-        'User Count'      = ($_.Group | Select-Object -ExpandProperty Username -Unique).Count
-        'Departments'     = ($departments -join ', ')
-        'Times Run'       = $_.Count
-        'Last Run'        = ($_.Group | Sort-Object Timestamp -Descending | Select-Object -First 1).Timestamp
-    }
-} | Sort-Object 'Times Run' -Descending
-
-# Display results to console
-Write-Host "`nProgram Usage Summary:" -ForegroundColor Cyan
-$SummaryData | Format-Table -AutoSize
-
-# After processing, show unknown programs for review
+# After processing, show unknown programs with full paths
 if ($UnknownPrograms.Count -gt 0) {
     Write-Host "`nPotential user applications not categorized:" -ForegroundColor Yellow
-    $UnknownPrograms | Sort-Object | ForEach-Object {
-        Write-Host "  $_"
+    $UnknownPrograms.GetEnumerator() | Sort-Object Key | ForEach-Object {
+        Write-Host "  $($_.Key) ($($_.Value))"
     }
 }
 
 # Export to CSV if path provided
 if ($ExportPath) {
     try {
-        # Get the base path without extension
-        $basePath = [System.IO.Path]::GetDirectoryName($ExportPath)
-        $baseFileName = [System.IO.Path]::GetFileNameWithoutExtension($ExportPath)
-        $extension = [System.IO.Path]::GetExtension($ExportPath)
+        # Ensure path ends with a backslash
+        $basePath = $ExportPath.TrimEnd('\') + '\'
+        
+        # Get current date for filenames
+        $dateStamp = Get-Date -Format "yyyyMMdd"
         
         # Create paths for both files
-        $programPath = Join-Path $basePath "$baseFileName-Programs$extension"
-        $userPath = Join-Path $basePath "$baseFileName-Users$extension"
+        $programPath = Join-Path $basePath "Programs-$dateStamp.csv"
+        $userPath = Join-Path $basePath "Users-$dateStamp.csv"
         
         # Export both summaries
         $SummaryData | Export-Csv -Path $programPath -NoTypeInformation
