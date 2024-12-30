@@ -27,9 +27,9 @@ param(
     [Parameter(HelpMessage="Export results to CSV file")]
     [string]$ExportPath,
     
-    [Parameter(HelpMessage="History duration to analyze")]
-    [ValidateSet("1", "3", "7", "14", "30", "all")]
-    [string]$History = "1",
+    [Parameter(HelpMessage="History duration to analyze (1h=1 hour, 1d=1 day, 3d=3 days, etc)")]
+    [ValidateSet("1h", "1d", "3d", "7d", "14d", "30d", "all")]
+    [string]$History = "1h",
     
     [Parameter(HelpMessage="Show help information")]
     [switch]$Help
@@ -42,7 +42,7 @@ if ($Help) {
     Write-Host ""
     Write-Host "Parameters:"
     Write-Host "  -ExportPath    Optional. Path to export CSV results"
-    Write-Host "  -History       Optional. Duration of history to analyze (1, 3, 7, 14, 30, or 'all' days). Default: 1"
+    Write-Host "  -History       Optional. Duration of history to analyze (1h=1 hour, 1d=1 day, 3d=3 days, etc). Default: 1h"
     Write-Host "  -Help          Show this help message"
     exit
 }
@@ -154,66 +154,71 @@ function Test-UserApplication {
         [string]$CommandLine
     )
     
-    Write-Verbose "Testing process: $ProcessName ($ProcessPath)"
+    Write-Verbose "Test-UserApplication: Testing process: $ProcessName"
+    Write-Verbose "  Path: $ProcessPath"
+    Write-Verbose "  Command: $CommandLine"
     
     # Skip empty process paths
     if ([string]::IsNullOrWhiteSpace($ProcessPath)) {
-        Write-Verbose "  Skipped: Empty process path"
+        Write-Verbose "  Result: Skipped (Empty process path)"
         return $false
     }
 
-    # Always include certain user applications
-    $UserApps = @(
-        'teams.exe',
-        'outlook.exe',
-        'excel.exe',
-        'word.exe',
-        'powerpnt.exe',
-        'chrome.exe',
-        'msedge.exe',
-        'firefox.exe',
-        'code.exe',
-        'notepad.exe',
-        'notepad++.exe',
-        'mstsc.exe'
+    # Skip core Windows system processes
+    $SystemProcesses = @(
+        'svchost.exe',
+        'csrss.exe',
+        'lsass.exe',
+        'services.exe',
+        'smss.exe',
+        'wininit.exe',
+        'system'
     )
-
-    if ($UserApps -contains $ProcessName.ToLower()) {
-        Write-Verbose "  Accepted: Known user application"
-        return $true
+    
+    if ($SystemProcesses -contains $ProcessName.ToLower()) {
+        Write-Verbose "  Result: Skipped (Core Windows process)"
+        return $false
     }
 
-    # Skip system paths unless they're known user applications
-    foreach ($path in $SystemPaths) {
-        if ($ProcessPath -like "*$path*") {
-            Write-Verbose "  Skipped: System path"
+    # Skip Windows system directories
+    $SystemDirs = @(
+        '\Windows\System32\',
+        '\Windows\SysWOW64\',
+        '\Windows\WinSxS\'
+    )
+    
+    foreach ($dir in $SystemDirs) {
+        if ($ProcessPath -like "*$dir*") {
+            Write-Verbose "  Result: Skipped (System directory: $dir)"
             return $false
         }
     }
 
-    # Check for user interaction parameters
-    $userInteractionParams = @(
-        '--user-data-dir=',
-        '--profile=',
-        '-foreground',
-        '-interactive',
-        '/user:'
-    )
-    
-    foreach ($param in $userInteractionParams) {
-        if ($CommandLine -like "*$param*") {
-            Write-Verbose "  Accepted: User interaction parameter found: $param"
-            return $true
-        }
-    }
-    
-    # If it's not in system paths and has an .exe extension, consider it a user app
-    if ($ProcessName -like "*.exe") {
-        Write-Verbose "  Accepted: Non-system .exe file"
+    # Accept anything in Program Files
+    if ($ProcessPath -like "*\Program Files*") {
+        Write-Verbose "  Result: Accepted (Program Files location)"
         return $true
     }
 
-    Write-Verbose "  Skipped: No matching criteria"
+    # Accept Microsoft Store apps
+    if ($ProcessPath -like "*\WindowsApps\*") {
+        Write-Verbose "  Result: Accepted (Microsoft Store app)"
+        return $true
+    }
+
+    # Accept user profile apps
+    if ($ProcessPath -like "*\Users\*") {
+        Write-Verbose "  Result: Accepted (User profile location)"
+        return $true
+    }
+
+    # Accept anything that's not explicitly filtered
+    if ($ProcessName -like "*.exe") {
+        Write-Verbose "  Result: Accepted (Executable file)"
+        return $true
+    }
+
+    Write-Verbose "  Result: Skipped (No matching criteria)"
     return $false
 }
 
@@ -240,10 +245,22 @@ function Get-FriendlyProgramName {
     
     # First try to get the product name from FileVersionInfo
     try {
-        if (Test-Path $ProcessPath) {
-            $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($ProcessPath)
-            if (-not [string]::IsNullOrWhiteSpace($versionInfo.ProductName)) {
-                return $versionInfo.ProductName
+        # Skip testing paths that are likely to cause access denied errors
+        $systemPaths = @(
+            'C:\\ProgramData\\',
+            'C:\\Windows\\',
+            'C:\\Program Files\\',
+            'C:\\Program Files (x86)\\'
+        )
+        
+        $isSystemPath = $systemPaths | Where-Object { $ProcessPath -like "$_*" }
+        
+        if (-not $isSystemPath) {
+            if (Test-Path $ProcessPath -ErrorAction SilentlyContinue) {
+                $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($ProcessPath)
+                if (-not [string]::IsNullOrWhiteSpace($versionInfo.ProductName)) {
+                    return $versionInfo.ProductName
+                }
             }
         }
     } catch {
@@ -267,7 +284,7 @@ $UnknownPrograms = @{}
 $ProcessCount = 0
 
 # Pre-compile regex patterns for performance
-$SystemAccountPattern = [regex]'(?:\$$|^SYSTEM$|admin|^NT)'
+$SystemAccountPattern = [regex]'^(SYSTEM|LOCAL SERVICE|NETWORK SERVICE)$'
 
 # Add function to check audit policy
 function Check-AuditPolicy {
@@ -294,10 +311,21 @@ try {
             LogName = 'Security'
             ID = 4688
         }
+        Write-Host "No time filter applied - retrieving ALL historical events"
     } else {
-        $days = [int]$History
-        $startTime = $endTime.AddDays(-$days)
-        Write-Host "`nRetrieving events from the last $days day(s)..." -ForegroundColor Cyan
+        # Parse history duration
+        $duration = switch -Regex ($History) {
+            '^\d+h$' { [int]($History -replace 'h',''); $unit = 'hours'; break }
+            '^\d+d$' { [int]($History -replace 'd',''); $unit = 'days'; break }
+            default { 1; $unit = 'hours' } # Default to 1 hour if invalid
+        }
+        
+        $startTime = if ($unit -eq 'hours') {
+            $endTime.AddHours(-$duration)
+        } else {
+            $endTime.AddDays(-$duration)
+        }
+        Write-Host "`nRetrieving events from the last $duration $unit..." -ForegroundColor Cyan
         $filter = @{
             LogName = 'Security'
             ID = 4688
@@ -307,8 +335,141 @@ try {
         Write-Host "Time range: $($startTime) to $($endTime)"
     }
     
+    Write-Host "Retrieving events..." -ForegroundColor Cyan
     $AllEvents = Get-WinEvent -FilterHashtable $filter -ErrorAction Stop
     Write-Host "Retrieved $($AllEvents.Count) events" -ForegroundColor Green
+
+    # Process all events regardless of time range
+    Write-Host "Processing events..." -ForegroundColor Cyan
+    Write-Host "Debug: Starting event processing loop" -ForegroundColor Gray
+    
+    $userEventCount = 0
+    $systemEventCount = 0
+    $skippedEventCount = 0
+    
+    foreach ($Event in $AllEvents) {
+        $ProcessCount++
+        $EventXml = [xml]$Event.ToXml()
+        
+        # Extract process information
+        $ProcessPath = ($EventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'NewProcessName' }).'#text'
+        $ProcessName = Split-Path $ProcessPath -Leaf
+        $CommandLine = ($EventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'CommandLine' }).'#text'
+        $SubjectUserSid = ($EventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'SubjectUserSid' }).'#text'
+        $TargetUserName = ($EventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'TargetUserName' }).'#text'
+        $SubjectDomainName = ($EventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'SubjectDomainName' }).'#text'
+        
+        Write-Verbose "Processing event $ProcessCount"
+        Write-Verbose "  Process: $ProcessName"
+        Write-Verbose "  Path: $ProcessPath"
+        Write-Verbose "  User SID: $SubjectUserSid"
+        Write-Verbose "  Domain: $SubjectDomainName"
+        Write-Verbose "  Username: $TargetUserName"
+        Write-Verbose "  Command: $CommandLine"
+        
+        # Extract username and clean it
+        $Username = ($EventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'SubjectUserName' }).'#text'
+        $Username = $Username -replace '^.*\\', ''
+        
+        # Skip system accounts using robust pattern
+        if ($Username -match $SystemAccountPattern) {
+            Write-Verbose "Skipped system account: $Username"
+            $systemEventCount++
+            continue
+        }
+        
+        # Add domain information to the process data
+        $ProcessInfo = [PSCustomObject]@{
+            Timestamp     = $Event.TimeCreated
+            Username      = $Username
+            Domain        = $Domain
+            ProcessName   = $ProcessName
+            CommandLine   = $CommandLine
+            Department   = $userInfo.UserClass
+            FriendlyName = Get-FriendlyProgramName -ProcessPath $ProcessPath -ProcessName $ProcessName
+            LogonType    = $LogonType
+        }
+        
+        Write-Verbose "  Processed Username: $Username"
+        
+        # Skip empty usernames
+        if ([string]::IsNullOrWhiteSpace($Username)) {
+            Write-Verbose "  Skipped empty username"
+            $systemEventCount++
+            continue
+        }
+        
+        
+        # Check if it's a user application
+        $isUserApp = Test-UserApplication -ProcessPath $ProcessPath -ProcessName $ProcessName -CommandLine $CommandLine
+        Write-Verbose "  Is User Application: $isUserApp"
+        
+        if (-not $isUserApp) {
+            if ($ProcessName.EndsWith('.exe')) {
+                if (-not $UnknownPrograms.ContainsKey($ProcessName)) {
+                    Write-Verbose "  Adding to Unknown Programs: $ProcessName"
+                    $UnknownPrograms[$ProcessName] = $ProcessPath
+                }
+            }
+            $skippedEventCount++
+            continue
+        }
+        
+        # If we got here, it's a user application
+        $userEventCount++
+        Write-Verbose "  Processing user application: $ProcessName for user $Username"
+        
+        # Get user info from cache, but don't skip if not found
+        $userInfo = $UserCache[$Username]
+        if (-not $userInfo) {
+            Write-Verbose "  No cached user info for: $Username"
+            $userInfo = @{
+                JobTitle = "Unknown"
+                Department = "Unknown"
+            }
+        }
+        
+        # Update user classification data
+        if (-not $UserClassificationData.ContainsKey($Username)) {
+            Write-Verbose "  Creating new user classification data for: $Username"
+            $UserClassificationData[$Username] = @{
+                Username = $Username
+                JobTitle = $userInfo.JobTitle
+                Department = $userInfo.Department
+                LastSeen = $Event.TimeCreated
+                ProcessCount = 0
+                Programs = [System.Collections.Generic.HashSet[string]]::new()
+            }
+        }
+        
+        $userData = $UserClassificationData[$Username]
+        $userData.ProcessCount++
+        [void]$userData.Programs.Add($ProcessName)
+        if ($Event.TimeCreated -gt $userData.LastSeen) {
+            $userData.LastSeen = $Event.TimeCreated
+        }
+        
+        # Add to process data
+        $ProcessInfo = [PSCustomObject]@{
+            Timestamp     = $Event.TimeCreated
+            Username      = $Username
+            ProcessName   = $ProcessName
+            CommandLine   = $CommandLine
+            Department   = $userInfo.UserClass
+            FriendlyName = Get-FriendlyProgramName -ProcessPath $ProcessPath -ProcessName $ProcessName
+        }
+
+        $ProcessData += $ProcessInfo
+        Write-Verbose "  Added to ProcessData: $ProcessName"
+    }
+
+    Write-Host "`nProcessing Summary:" -ForegroundColor Cyan
+    Write-Host "Total processes examined: $ProcessCount"
+    Write-Host "User events found: $userEventCount"
+    Write-Host "System events skipped: $systemEventCount"
+    Write-Host "Other events skipped: $skippedEventCount"
+    Write-Host "User applications found: $($ProcessData.Count)"
+    Write-Host "Unknown programs found: $($UnknownPrograms.Count)"
 } catch {
     Write-Host "Error retrieving events: $_" -ForegroundColor Red
     if ($_.Exception.Message -like "*No events were found*") {
@@ -320,96 +481,26 @@ try {
     exit 1
 }
 
-foreach ($Event in $AllEvents) {
-    $ProcessCount++
-    $EventXml = [xml]$Event.ToXml()
-    
-    # Extract process information
-    $ProcessPath = ($EventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'NewProcessName' }).'#text'
-    $ProcessName = Split-Path $ProcessPath -Leaf
-    $CommandLine = ($EventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'CommandLine' }).'#text'
-    $Username = ($EventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'SubjectUserName' }).'#text'
-    
-    # Check if it's a user application
-    if (-not (Test-UserApplication -ProcessPath $ProcessPath -ProcessName $ProcessName -CommandLine $CommandLine)) {
-        if ($ProcessName.EndsWith('.exe')) {
-            if (-not $UnknownPrograms.ContainsKey($ProcessName)) {
-                $UnknownPrograms[$ProcessName] = $ProcessPath
-            }
-        }
-        continue
-    }
-    
-    # Get username and clean it
-    $Username = $Username -replace '^.*\\', ''
-    
-    # Skip system accounts
-    if ($Username -match $SystemAccountPattern) {
-        Write-Verbose "Skipped system account: $Username"
-        continue
-    }
-    
-    # Get user info from cache, but don't skip if not found
-    $userInfo = $UserCache[$Username]
-    if (-not $userInfo) {
-        $userInfo = @{
-            JobTitle = "Unknown"
-            UserClass = "Unknown"
-        }
-    }
-    
-    Write-Verbose "Processing $ProcessName for user $Username ($($userInfo.UserClass))"
-    
-    # Update user classification data
-    if (-not $UserClassificationData.ContainsKey($Username)) {
-        $UserClassificationData[$Username] = @{
-            Username = $Username
-            JobTitle = $userInfo.JobTitle
-            UserClass = $userInfo.UserClass
-            LastSeen = $Event.TimeCreated
-            ProcessCount = 0
-            Programs = [System.Collections.Generic.HashSet[string]]::new()
-        }
-    }
-    
-    $userData = $UserClassificationData[$Username]
-    $userData.ProcessCount++
-    [void]$userData.Programs.Add($ProcessName)
-    if ($Event.TimeCreated -gt $userData.LastSeen) {
-        $userData.LastSeen = $Event.TimeCreated
-    }
-    
-    # Add to process data
-    $ProcessInfo = [PSCustomObject]@{
-        Timestamp     = $Event.TimeCreated
-        Username      = $Username
-        ProcessName   = $ProcessName
-        CommandLine   = $CommandLine
-        JobTitle      = $userInfo.JobTitle
-        UserClass     = $userInfo.UserClass
-        FriendlyName  = Get-FriendlyProgramName -ProcessPath $ProcessPath -ProcessName $ProcessName
-    }
-
-    $ProcessData += $ProcessInfo
-}
-
-Write-Host "`nProcessing Summary:" -ForegroundColor Cyan
-Write-Host "Total processes examined: $ProcessCount"
-Write-Host "User applications found: $($ProcessData.Count)"
-
 # Get unique usernames from events for bulk processing
 Write-Host "Processing unique users..." -ForegroundColor Cyan
 $UniqueUsers = $AllEvents | ForEach-Object {
-    $username = ([xml]$_.ToXml()).Event.EventData.Data | 
-    Where-Object {$_.Name -eq "SubjectUserName"} | 
-    Select-Object -ExpandProperty '#text'
-    if (-not ($username -match $SystemAccountPattern)) {
-        # Extract username without domain and clean it
-        $cleanUsername = $username -replace '^.*\\', ''
-        if (-not [string]::IsNullOrWhiteSpace($cleanUsername)) {
-            Write-Verbose "Found user: $cleanUsername"
-            $cleanUsername
-        }
+    $EventXml = [xml]$_.ToXml()
+    
+    # Extract username from SubjectUserName field
+    $Username = ($EventXml.Event.EventData.Data | Where-Object { $_.Name -eq 'SubjectUserName' }).'#text'
+    
+    # Clean username by removing domain prefix
+    $cleanUsername = $Username -replace '^.*\\', ''
+    
+    # Skip only actual system accounts
+    if ($cleanUsername -match $SystemAccountPattern) {
+        Write-Verbose "Skipping system account: $cleanUsername"
+        return
+    }
+    
+    if (-not [string]::IsNullOrWhiteSpace($cleanUsername)) {
+        Write-Verbose "Found user: $cleanUsername"
+        $cleanUsername
     }
 } | Select-Object -Unique
 
@@ -423,13 +514,24 @@ $foundUsers = 0
 foreach ($username in $UniqueUsers) {
     try {
         Write-Host "Looking up user: $username" -ForegroundColor Yellow
-        # Skip system accounts
-        if ($username -match '^(SYSTEM|LOCAL SERVICE|NETWORK SERVICE)$') {
-            Write-Host "  Skipping system account" -ForegroundColor Gray
+        # Skip system accounts and machine accounts
+        if ($username -match '^(SYSTEM|LOCAL SERVICE|NETWORK SERVICE)$' -or $username.EndsWith('$')) {
+            Write-Host "  Skipping system/machine account" -ForegroundColor Gray
             $UserCache[$username] = @{
                 JobTitle = "System Account"
                 UserClass = "System"
                 Department = "System"
+            }
+            continue
+        }
+
+        # Skip machine accounts earlier in processing
+        if ($username.EndsWith('$')) {
+            Write-Host "  Skipping machine account: $username" -ForegroundColor Gray
+            $UserCache[$username] = @{
+                JobTitle = "Machine Account"
+                UserClass = "Machine"
+                Department = "Machine"
             }
             continue
         }
@@ -460,18 +562,107 @@ foreach ($username in $UniqueUsers) {
                 $mgUser.JobTitle 
             }
             
-            $department = if ([string]::IsNullOrWhiteSpace($mgUser.Department)) {
-                "No Department"
-            } else {
-                $mgUser.Department
+            # Enhanced department retrieval with multiple fallback options
+            $department = "Unclassified"
+            
+            # Get all relevant user properties in a single call
+            $userDetails = Get-MgUser -UserId $mgUser.Id -Property `
+                "department,companyName,officeLocation,onPremisesExtensionAttributes,jobTitle,mailNickname,mail,userPrincipalName,assignedLicenses"
+            
+            # Try primary department field
+            if (-not [string]::IsNullOrWhiteSpace($userDetails.Department)) {
+                $department = $userDetails.Department
+            }
+            # Try company name if department is empty
+            elseif (-not [string]::IsNullOrWhiteSpace($userDetails.CompanyName)) {
+                $department = $userDetails.CompanyName
+            }
+            # Try extension attributes
+            else {
+                $extProps = $userDetails.OnPremisesExtensionAttributes
+                if ($extProps) {
+                    # Check all extension attributes for department info
+                    $dept = ($extProps.extensionAttribute1, $extProps.extensionAttribute2,
+                            $extProps.extensionAttribute3, $extProps.extensionAttribute4,
+                            $extProps.extensionAttribute5) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1
+                    
+                    if ($dept) {
+                        $department = $dept
+                    }
+                }
             }
             
-            Write-Host "    Using department as class: $department" -ForegroundColor Gray
+            # Try office location if still unclassified
+            if ($department -eq "Unclassified" -and -not [string]::IsNullOrWhiteSpace($userDetails.OfficeLocation)) {
+                $department = $userDetails.OfficeLocation
+            }
+            
+            # Try job title if still unclassified
+            if ($department -eq "Unclassified" -and -not [string]::IsNullOrWhiteSpace($userDetails.JobTitle)) {
+                $department = $userDetails.JobTitle
+            }
+            
+            # Try mail nickname if still unclassified
+            if ($department -eq "Unclassified" -and -not [string]::IsNullOrWhiteSpace($userDetails.MailNickname)) {
+                $department = $userDetails.MailNickname
+            }
+            
+            # Try to extract department from email domain
+            if ($department -eq "Unclassified" -and -not [string]::IsNullOrWhiteSpace($userDetails.Mail)) {
+                $domain = $userDetails.Mail.Split('@')[1]
+                if (-not [string]::IsNullOrWhiteSpace($domain)) {
+                    $department = $domain.Split('.')[0]
+                }
+            }
+            
+            # Try to get department from group memberships
+            if ($department -eq "Unclassified") {
+                try {
+                    $groups = Get-MgUserMemberOf -UserId $mgUser.Id -All
+                    $departmentGroup = $groups | Where-Object { 
+                        $_.DisplayName -match 'Department|Team|Group|Division' 
+                    } | Select-Object -First 1
+                    
+                    if ($departmentGroup) {
+                        $department = $departmentGroup.DisplayName
+                    }
+                } catch {
+                    Write-Verbose "Failed to retrieve group memberships for department info"
+                }
+            }
+            
+            # Try to get department from license SKUs
+            if ($department -eq "Unclassified" -and $userDetails.AssignedLicenses.Count -gt 0) {
+                $license = $userDetails.AssignedLicenses[0].SkuId
+                if (-not [string]::IsNullOrWhiteSpace($license)) {
+                    $department = "License-$license"
+                }
+            }
+            
+            Write-Host "    Using department: $department" -ForegroundColor Gray
+            
+            # Log the source of the department information
+            $source = switch ($department) {
+                { $_ -eq $userDetails.Department } { "Primary Department Field" }
+                { $_ -eq $userDetails.CompanyName } { "Company Name Field" }
+                { $_ -in ($extProps.extensionAttribute1, $extProps.extensionAttribute2,
+                        $extProps.extensionAttribute3, $extProps.extensionAttribute4,
+                        $extProps.extensionAttribute5) } { "Extension Attribute" }
+                { $_ -eq $userDetails.OfficeLocation } { "Office Location" }
+                { $_ -eq $userDetails.JobTitle } { "Job Title" }
+                { $_ -eq $userDetails.MailNickname } { "Mail Nickname" }
+                { $_ -eq ($userDetails.Mail.Split('@')[1].Split('.')[0]) } { "Email Domain" }
+                { $_ -match '^License-' } { "License SKU" }
+                default { "Default (Unclassified)" }
+            }
+            
+            Write-Verbose "    Department source: $source"
             
             $UserCache[$username] = @{
                 JobTitle = $jobTitle
                 UserClass = $department
                 Department = $department
+                DepartmentSource = $source
             }
         } else {
             Write-Host "  No user found in Entra ID" -ForegroundColor Red
@@ -493,81 +684,70 @@ foreach ($username in $UniqueUsers) {
 
 Write-Host "Found $foundUsers users in Entra ID" -ForegroundColor Cyan
 
-# Group and summarize the process data
-$SummaryData = $ProcessData | Group-Object ProcessName | ForEach-Object {
-    # Get unique departments for this process
-    $departments = $_.Group | Select-Object -ExpandProperty Username -Unique | ForEach-Object {
-        $UserCache[$_].Department
-    } | Sort-Object -Unique | Where-Object { $_ -ne "Unknown" -and $_ -ne "System" }
-
+# Create program usage summary
+$ProgramUsageSummary = $ProcessData | Group-Object ProcessName | ForEach-Object {
+    $users = $_.Group | Select-Object -ExpandProperty Username -Unique | Sort-Object
+    $departments = $users | ForEach-Object { $UserCache[$_].Department } | Select-Object -Unique | Sort-Object
     [PSCustomObject]@{
-        'Program Name'    = $_.Name
-        'Friendly Name'   = ($_.Group | Select-Object -ExpandProperty FriendlyName -First 1)
-        'Department'      = ($departments -join ', ')
-        'Times Run'       = $_.Count
-        'Last Run'        = ($_.Group | Sort-Object Timestamp -Descending | Select-Object -First 1).Timestamp.ToString('MM/dd/yyyy h:mm:ss tt')
+        'User'          = ($users -join ', ')
+        'Program Name'  = $_.Name
+        'Friendly Name' = ($_.Group | Select-Object -ExpandProperty FriendlyName -First 1)
+        'Department'    = ($departments -join ', ')
+        'Times Run'     = $_.Count
+        'Last Run'      = ($_.Group | Sort-Object Timestamp -Descending | Select-Object -First 1).Timestamp.ToString('MM/dd/yyyy h:mm:ss tt')
     }
-} | Sort-Object 'Times Run' -Descending
-
-# Display results to console
-Write-Host "`nProgram Usage Summary:" -ForegroundColor Cyan
-Write-Host "User applications found: $($ProcessData.Count)" -ForegroundColor Yellow
-$SummaryData | Format-Table -Property @(
-    'Program Name',
-    'Friendly Name',
-    'Department',
-    @{Name='Times Run'; Expression={$_.'Times Run'}},
-    @{Name='Last Run'; Expression={$_.'Last Run'}}
-) -AutoSize
-
-# Create potential user applications section
-$SummaryPrograms = $SummaryData | Select-Object -ExpandProperty 'Program Name'
-$PotentialUserApps = $ProcessData | Where-Object {
-    # Filter for applications that might be user apps but aren't in known categories or summary
-    $app = $_
-    -not ($SystemProcessRegex.IsMatch($app.ProcessName)) -and
-    -not ($SystemPaths | Where-Object { $app.ProcessPath -like "*$_*" }) -and
-    -not ($UserApps -contains $app.ProcessName.ToLower()) -and
-    -not ($SummaryPrograms -contains $app.ProcessName)
-} | Group-Object ProcessName | ForEach-Object {
-    [PSCustomObject]@{
-        'Program Name' = $_.Name
-        'Full Path' = if ($_.Group[0].ProcessPath) { $_.Group[0].ProcessPath } else { "Unknown" }
-        'Times Seen' = $_.Count
-        'Users' = ($_.Group | Select-Object -ExpandProperty Username -Unique | Sort-Object) -join ', '
-        'Last Run' = ($_.Group | Sort-Object Timestamp -Descending | Select-Object -First 1).Timestamp.ToString('MM/dd/yyyy h:mm:ss tt')
-    }
-} | Sort-Object 'Times Seen' -Descending
-
-# Display potential user applications
-Write-Host "`nPotential User Applications:" -ForegroundColor Yellow
-$PotentialUserApps | Format-Table -AutoSize
+} | Sort-Object 'Program Name'
 
 # Create user classification summary
-$UserSummary = $UniqueUsers | ForEach-Object {
-    $username = $_
-    $userInfo = $UserCache[$username]
-    $programs = $ProcessData | Where-Object { $_.Username -eq $username } | 
-                Select-Object -ExpandProperty ProcessName -Unique | Sort-Object
-
+$UserClassificationSummary = $ProcessData | Group-Object Username | ForEach-Object {
     [PSCustomObject]@{
-        'Username'      = $username
-        'Job Title'     = $userInfo.JobTitle
-        'Department'    = $userInfo.Department
-        'Programs Used' = ($programs -join ', ')
+        'Username'      = $_.Name
+        'Department'    = ($_.Group | Select-Object -ExpandProperty Department -First 1)
+        'Programs Used' = ($_.Group | Select-Object -ExpandProperty ProcessName -Unique)
+        'Times Run'     = $_.Count
+        'Last Run'      = ($_.Group | Sort-Object Timestamp -Descending | Select-Object -First 1).Timestamp.ToString('MM/dd/yyyy h:mm:ss tt')
     }
 } | Sort-Object Username
 
 # Display results to console
+Write-Host "`nProgram Usage Summary:" -ForegroundColor Cyan
+Write-Host "User applications found: $($ProcessData.Count)" -ForegroundColor Yellow
+    $ProgramUsageSummary | Sort-Object 'Times Run' -Descending | Format-Table -Property @(
+        @{Name='User'; Expression={$_.User}; Width=30},
+        @{Name='Program Name'; Expression={$_.'Program Name'}; Width=25},
+        @{Name='Friendly Name'; Expression={$_.'Friendly Name'}; Width=30},
+        @{Name='Department'; Expression={$_.Department}; Width=20},
+        @{Name='Times Run'; Expression={$_.'Times Run'}; Width=10},
+        @{Name='Last Run'; Expression={$_.'Last Run'}; Width=20}
+    ) -Wrap
+
+# Display results to console
 Write-Host "`nUser Classification Summary:" -ForegroundColor Cyan
-$UserSummary | Format-Table -AutoSize
+Write-Host "User applications found: $($UserClassificationSummary.Count)" -ForegroundColor Yellow
+    $UserClassificationSummary | Sort-Object 'Times Run' -Descending | Format-Table -Property @(
+        @{Name='Username'; Expression={$_.Username}; Width=20},
+        @{Name='Department'; Expression={$_.Department}; Width=20},
+        @{Name='Programs Used'; Expression={$_.'Programs Used'}; Width=40},
+        @{Name='Times Run'; Expression={$_.'Times Run'}; Width=10},
+        @{Name='Last Run'; Expression={$_.'Last Run'}; Width=20}
+    ) -Wrap
 
 # After processing, show unknown programs with full paths
 if ($UnknownPrograms.Count -gt 0) {
     Write-Host "`nPotential user applications not categorized:" -ForegroundColor Yellow
-    $UnknownPrograms.GetEnumerator() | Sort-Object Key | ForEach-Object {
-        Write-Host "  $($_.Key) ($($_.Value))"
-    }
+    
+    # Convert unknown programs to simple format with just name and friendly name
+    $UnknownProgramsSummary = $UnknownPrograms.GetEnumerator() | ForEach-Object {
+        [PSCustomObject]@{
+            'Program Name'  = $_.Key
+            'Friendly Name' = Get-FriendlyProgramName -ProcessPath $_.Value -ProcessName $_.Key
+        }
+    } | Sort-Object 'Program Name'
+
+    $UnknownProgramsSummary | Format-Table -Property @(
+        'Program Name',
+        'Friendly Name'
+    ) -AutoSize
 }
 
 # Export to CSV if path provided
@@ -584,8 +764,8 @@ if ($ExportPath) {
         $userPath = Join-Path $basePath "Users-$dateStamp.csv"
         
         # Export both summaries
-        $SummaryData | Export-Csv -Path $programPath -NoTypeInformation
-        $UserSummary | Export-Csv -Path $userPath -NoTypeInformation
+        $ProgramUsageSummary | Export-Csv -Path $programPath -NoTypeInformation
+        $UserClassificationSummary | Export-Csv -Path $userPath -NoTypeInformation
         
         Write-Host "`nResults exported to:"
         Write-Host "Program summary: $programPath"
