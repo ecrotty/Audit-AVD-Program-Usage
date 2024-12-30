@@ -20,10 +20,11 @@ A PowerShell script for monitoring and analyzing process creation events (Event 
 
 ### Usage Analysis
 - Per-user program usage tracking with Microsoft Entra ID integration
-- Flexible historical analysis options (1, 3, 7, 14, 30 days, or all available history)
-- CSV export capability
-- Summary statistics and reporting
-- User details enrichment from Microsoft Entra ID
+- Flexible historical analysis options (1h, 1d, 3d, 7d, 14d, 30d, or all available history)
+- Enhanced user department classification with multiple fallback options
+- CSV export capability with timestamped files
+- Detailed program and user summary statistics
+- Improved system process filtering and path exclusion
 
 ## Prerequisites
 
@@ -62,21 +63,23 @@ Basic usage:
 
 With parameters:
 ```powershell
-.\Audit-AVD-Program-Usage.ps1 -History 7 -ExportPath "C:\Reports\usage.csv"
+.\Audit-AVD-Program-Usage.ps1 -History 3d -ExportPath "C:\Reports"
 ```
 
 ### Parameters
 
-- `-History`: Duration to analyze (1, 3, 7, 14, 30, or 'all' days). Default: 1
-- `-ExportPath`: Path to export CSV results
-- `-Help`: Show help information
+- `-History`: Duration to analyze (1h=1 hour, 1d=1 day, 3d=3 days, 7d=7 days, 14d=14 days, 30d=30 days, or 'all'). Default: 1h
+- `-ExportPath`: Directory path to export timestamped CSV results (creates separate files for program and user summaries)
+- `-Help`: Show detailed help information
 
 ### Authentication
 
 The script will:
-1. Automatically disconnect any existing Microsoft Graph connections
-2. Prompt for interactive login with required scopes
-3. Detect your organization's domain from your authenticated user account
+1. Automatically install required Microsoft Graph modules if missing
+2. Disconnect any existing Microsoft Graph connections
+3. Prompt for interactive login with required scopes
+4. Detect your organization's domain from your authenticated user account
+5. Cache user information for improved performance
 
 ## Output
 
