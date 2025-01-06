@@ -2,6 +2,18 @@
 
 A PowerShell script for monitoring and analyzing process creation events (Event ID 4688) in Azure Virtual Desktop (AVD) environments. The script helps track and understand which applications users are running in their AVD sessions, with Microsoft Entra ID integration for user details.
 
+## Project Structure
+
+The project has been refactored into smaller, more manageable files:
+
+- `Audit-AVD-Program-Usage.ps1`: Main script file
+- `src/Config.ps1`: Configuration settings
+- `src/Utilities.ps1`: Utility functions
+- `src/EventProcessing.ps1`: Event processing logic
+- `src/Reporting.ps1`: Reporting and output functions
+
+This modular structure improves maintainability and makes it easier to extend the functionality.
+
 ## Features
 
 ### User Program Detection
@@ -70,7 +82,9 @@ With parameters:
 
 - `-History`: Duration to analyze (1h=1 hour, 1d=1 day, 3d=3 days, 7d=7 days, 14d=14 days, 30d=30 days, or 'all'). Default: 1h
 - `-ExportPath`: Directory path to export timestamped CSV results (creates separate files for program and user summaries)
+- `-Filter`: Enable filtering of system processes and paths
 - `-Help`: Show detailed help information
+- `-UseCurrentUser`: Use current logged in user's account to run the script
 
 ### Authentication
 
