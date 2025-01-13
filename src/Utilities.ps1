@@ -70,6 +70,8 @@ function Test-UserApplication {
         [string]$ProcessPath,
         [Parameter(Mandatory=$true)]
         [string]$ProcessName,
+        [Parameter(Mandatory=$true)]
+        [string]$Username,
         [Parameter(Mandatory=$false)]
         [switch]$Filter
     )
@@ -77,20 +79,33 @@ function Test-UserApplication {
     if ([string]::IsNullOrWhiteSpace($ProcessPath)) { return $true }
     
     if ($Filter) {
+        # Filter out system accounts
+        if ($Username -eq "SYSTEM" -or $Username -eq "LOCAL SERVICE" -or $Username -eq "NETWORK SERVICE" -or $Username.EndsWith('$')) {
+            return $false
+        }
+
+        # Filter out system processes
         if ($Config.SystemProcesses -contains $ProcessName.ToLower()) {
             return $false
         }
         
+        # Filter out processes from system paths
         foreach ($path in $Config.SystemPaths) {
             if ($ProcessPath -like ("*" + $path + "*")) {
                 return $false
             }
         }
         
+        # Include processes from user paths
         foreach ($path in $Config.UserPaths) {
             if ($ProcessPath -like ("*" + $path + "*")) {
                 return $true
             }
+        }
+
+        # Additional checks for system-run commands
+        if ($ProcessPath -like "*\Windows\*" -or $ProcessPath -like "*\System32\*" -or $ProcessPath -like "*\SysWOW64\*") {
+            return $false
         }
     }
     
@@ -142,7 +157,18 @@ function Get-UserInfo {
     
     try {
         Write-Verbose "Attempting to retrieve user info from Azure AD for $Username@$script:OrgDomain"
-        $user = Get-MgUser -UserId ($Username + "@" + $script:OrgDomain) -Property "displayName,jobTitle,department" -ErrorAction Stop
+        
+        if ([string]::IsNullOrEmpty($script:OrgDomain)) {
+            Write-Verbose "OrgDomain is not set. Attempting to retrieve it."
+            $script:OrgDomain = Initialize-MgConnection
+        }
+        
+        $userId = $Username + "@" + $script:OrgDomain
+        Write-Verbose "Constructed user ID: $userId"
+        
+        $user = Get-MgUser -UserId $userId -Property "displayName,jobTitle,department" -ErrorAction Stop
+        
+        Write-Verbose "Raw user object: $($user | ConvertTo-Json -Depth 1)"
         
         $department = if ($user.Department) { $user.Department } else { "Not Set in Azure AD" }
         $jobTitle = if ($user.JobTitle) { $user.JobTitle } else { "Not Set in Azure AD" }
@@ -158,6 +184,10 @@ function Get-UserInfo {
         $errorMessage = "User lookup failed for $Username@$script:OrgDomain: $_"
         Write-Verbose $errorMessage
         Write-Host $errorMessage -ForegroundColor Red
+        
+        Write-Verbose "Error details: $($_.Exception.Message)"
+        Write-Verbose "Error stack trace: $($_.ScriptStackTrace)"
+        
         return @{ Department = "Lookup Failed"; JobTitle = "Lookup Failed" }
     }
 }

@@ -27,7 +27,6 @@
     Copyright (c) 2025 Ed Crotty
     Licensed under the BSD 3-Clause License
 #>
-
 [CmdletBinding()]
 param(
     [Parameter(HelpMessage="Export results to CSV file")]
@@ -46,6 +45,8 @@ param(
     [Parameter(HelpMessage="Use current logged in user's account to run the script")]
     [switch]$UseCurrentUser
 )
+
+# The built-in $VerbosePreference will be set to "Continue" automatically when -Verbose is used
 
 # Unblock all .ps1 files in the script directory and subdirectories
 Get-ChildItem -Path $PSScriptRoot -Recurse -Filter *.ps1 | ForEach-Object {

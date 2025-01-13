@@ -12,7 +12,6 @@ function Generate-ProgramSummary {
     $programSummary = $ProcessData | Group-Object ProcessName | ForEach-Object {
         $users = $_.Group | Select-Object -ExpandProperty Username -Unique | Where-Object { $_ -ne "-" }
         $departments = $_.Group | Select-Object -ExpandProperty Department -Unique | Where-Object { $_ -ne "Not Specified" -and $_ -ne "Not Found" }
-        $isUserApp = $_.Name -match '(chrome|teams|office|edge|outlook|excel|word|powerpoint|acrobat|onedrive|code|notepad|powershell)\.exe$'
         
         [PSCustomObject]@{
             'Program' = $_.Name
@@ -21,9 +20,8 @@ function Generate-ProgramSummary {
             'Departments' = if ($departments) { $departments -join ', ' } else { "Not Specified" }
             'Count' = $_.Count
             'Last Run' = ($_.Group | Sort-Object Timestamp -Descending)[0].Timestamp
-            'IsUserApp' = $isUserApp -or ($users.Count -gt 0)
         }
-    } | Sort-Object IsUserApp, { if ($_.Users -eq "-") { 2 } else { 1 } }, Count -Descending
+    } | Sort-Object Count -Descending
 
     return $programSummary
 }
@@ -53,14 +51,8 @@ function Output-Results {
         [int]$TotalEvents
     )
 
-    Write-Host ("`nUser Application Summary (" + $TotalEvents + " events):") -ForegroundColor Cyan
-    Write-Host "Common Applications:" -ForegroundColor Yellow
-    $ProgramSummary | Where-Object { $_.IsUserApp } | 
-        Select-Object Program, 'Friendly Name', Users, Departments, @{Name='Times Run'; Expression={$_.Count}}, 'Last Run' | 
-        Format-Table -AutoSize -Wrap
-
-    Write-Host "`nSystem and Background Processes:" -ForegroundColor Yellow
-    $ProgramSummary | Where-Object { -not $_.IsUserApp } | 
+    Write-Host ("`nApplication Summary (" + $TotalEvents + " events):") -ForegroundColor Cyan
+    $ProgramSummary | 
         Select-Object Program, 'Friendly Name', Users, Departments, @{Name='Times Run'; Expression={$_.Count}}, 'Last Run' | 
         Format-Table -AutoSize -Wrap
 
@@ -81,6 +73,7 @@ function Export-Results {
         $date = Get-Date -Format "yyyyMMdd"
         $ProgramSummary | Export-Csv -Path "$ExportPath\Programs-$date.csv" -NoTypeInformation
         $UserSummary | Export-Csv -Path "$ExportPath\Users-$date.csv" -NoTypeInformation
+        
         Write-Host "`nExported results to $ExportPath"
     }
 }
