@@ -8,7 +8,8 @@ $script:OrgDomain = $null
 function Initialize-MgConnection {
     [CmdletBinding()]
     param (
-        [switch]$UseCurrentUser
+        [switch]$UseCurrentUser,
+        [switch]$IsRemoteExecution
     )
 
     if (Get-MgContext) {
@@ -25,14 +26,33 @@ function Initialize-MgConnection {
     
     Write-Host "Connecting to Microsoft Graph..."
     try {
-        $connectParams = @{
-            Scopes = $Config.GraphScopes
-            NoWelcome = $true
+        if ($IsRemoteExecution) {
+            Write-Verbose "Using remote execution authentication method"
+            # Use Az module for non-interactive authentication
+            if (-not (Get-Module -ListAvailable -Name Az.Accounts)) {
+                Install-Module -Name Az.Accounts -Scope CurrentUser -Force -AllowClobber
+            }
+            Import-Module -Name Az.Accounts -Force
+
+            # Connect to Azure using the managed identity
+            Connect-AzAccount -Identity
+
+            # Get an access token for Microsoft Graph
+            $tokenResponse = Get-AzAccessToken -ResourceUrl "https://graph.microsoft.com"
+            $secureToken = ConvertTo-SecureString $tokenResponse.Token -AsPlainText -Force
+            Connect-MgGraph -AccessToken $secureToken
         }
-        if ($UseCurrentUser) {
-            Connect-MgGraph @connectParams -UseDeviceAuthentication
-        } else {
-            Connect-MgGraph @connectParams
+        else {
+            Write-Verbose "Using interactive authentication method"
+            $connectParams = @{
+                Scopes = $Config.GraphScopes
+                NoWelcome = $true
+            }
+            if ($UseCurrentUser) {
+                Connect-MgGraph @connectParams -UseDeviceAuthentication
+            } else {
+                Connect-MgGraph @connectParams
+            }
         }
         
         # Verify permissions
@@ -161,6 +181,10 @@ function Get-UserInfo {
         if ([string]::IsNullOrEmpty($script:OrgDomain)) {
             Write-Verbose "OrgDomain is not set. Attempting to retrieve it."
             $script:OrgDomain = Initialize-MgConnection
+        }
+        
+        if ([string]::IsNullOrEmpty($Username) -or [string]::IsNullOrEmpty($script:OrgDomain)) {
+            throw "Username or OrgDomain is empty. Username: '$Username', OrgDomain: '$script:OrgDomain'"
         }
         
         $userId = $Username + "@" + $script:OrgDomain
